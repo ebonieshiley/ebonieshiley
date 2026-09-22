@@ -1,0 +1,125 @@
+name: CI Pipeline
+
+on:
+  - push
+  - pull_request
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - go
+          - rust
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go ${{ matrix.language }}
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Set up Rust ${{ matrix.language }}
+        if: matrix.language == 'rust'
+        uses: actions/setup-rust@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - name: Install Go dependencies
+        if: matrix.language == 'go' && hashFiles('go.mod') != ''
+        run: go mod download
+
+      - name: Install Rust dependencies
+        if: matrix.language == 'rust' && hashFiles('Cargo.toml') != ''
+        run: cargo fetch
+
+      - name: Check Go formatting
+        if: matrix.language == 'go' && hashFiles('go.mod') != ''
+        run: test -z "$(gofmt -l .)"
+
+      - name: Check Rust formatting
+        if: matrix.language == 'rust' && hashFiles('Cargo.toml') != ''
+        run: cargo fmt --all -- --check
+
+      - name: Run Go static analysis
+        if: matrix.language == 'go' && hashFiles('go.mod') != ''
+        run: go vet ./...
+
+      - name: Run Rust Clippy
+        if: matrix.language == 'rust' && hashFiles('Cargo.toml') != ''
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build Go project
+        if: matrix.language == 'go' && hashFiles('go.mod') != ''
+        run: go build ./...
+
+      - name: Typecheck Rust project
+        if: matrix.language == 'rust' && hashFiles('Cargo.toml') != ''
+        run: cargo check --all-targets --all-features
+
+      - name: Run Go tests
+        if: matrix.language == 'go' && hashFiles('go.mod') != ''
+        run: go test ./...
+
+      - name: Run Rust tests
+        if: matrix.language == 'rust' && hashFiles('Cargo.toml') != ''
+        run: cargo test --all-targets --all-features
+
+      - name: Write pipeline summary
+        if: always()
+        shell: bash
+        env:
+          GO_OUTCOME: ${{ steps.go-install.outputs.outcome }}
+          GO_LINT_OUTCOME: ${{ steps.go-lint.outputs.outcome }}
+          GO_BUILD_OUTCOME: ${{ steps.go-build.outputs.outcome }}
+          GO_TEST_OUTCOME: ${{ steps.go-test.outputs.outcome }}
+          RUST_OUTCOME: ${{ steps.rust-install.outputs.outcome }}
+          RUST_LINT_OUTCOME: ${{ steps.rust-lint.outputs.outcome }}
+          RUST_BUILD_OUTCOME: ${{ steps.rust-build.outputs.outcome }}
+          RUST_TEST_OUTCOME: ${{ steps.rust-test.outputs.outcome }}
+        run: |
+          outcome_label() {
+            case "$1" in
+              success) printf 'Passed' ;;
+              failure) printf 'Failed' ;;
+              cancelled) printf 'Cancelled' ;;
+              skipped) printf 'Skipped' ;;
+              *) printf 'Unknown' ;;
+            esac
+          }
+
+          go_installed=$GO_OUTCOME
+          go_lint=$GO_LINT_OUTCOME
+          go_build=$GO_BUILD_OUTCOME
+          go_test=$GO_TEST_OUTCOME
+          rust_installed=$RUST_OUTCOME
+          rust_lint=$RUST_LINT_OUTCOME
+          rust_build=$RUST_BUILD_OUTCOME
+          rust_test=$RUST_TEST_OUTCOME
+
+          if [[ -z "$go_installed" ]]; then go_installed=skipped; fi
+          if [[ -z "$go_lint" ]]; then go_lint=skipped; fi
+          if [[ -z "$go_build" ]]; then go_build=skipped; fi
+          if [[ -z "$go_test" ]]; then go_test=skipped; fi
+          if [[ -z "$rust_installed" ]]; then rust_installed=skipped; fi
+          if [[ -z "$rust_lint" ]]; then rust_lint=skipped; fi
+          if [[ -z "$rust_build" ]]; then rust_build=skipped; fi
+          if [[ -z "$rust_test" ]]; then rust_test=skipped; fi
+
+          printf '| Runtime | Install | Lint | Build | Test |\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '|---|---|---|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '| Go | %s | %s | %s | %s |\n' "$(outcome_label "$go_installed")" "$(outcome_label "$go_lint")" "$(outcome_label "$go_build")" "$(outcome_label "$go_test")" >> "$GITHUB_STEP_SUMMARY"
+          printf '| Rust | %s | %s | %s | %s |\n' "$(outcome_label "$rust_installed")" "$(outcome_label "$rust_lint")" "$(outcome_label "$rust_build")" "$(outcome_label "$rust_test")" >> "$GITHUB_STEP_SUMMARY"
